@@ -1,0 +1,48 @@
+# Visual Studio 관련
+.vs/
+*.db
+*.suo
+*.user
+*.cache
+*.VC.db
+*.opendb
+*.vsidx
+
+# 빌드 결과물
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Tt]emp/
+
+# 자동 생성 캐시
+*.pch
+*.ipch
+*.db
+*.opendb
+*.VC.db
+
+# 기타 임시 파일
+*.cache
+*.ilk
+*.pdb
+*.obj
+*.exe
+*.dll
+*.log
+*.tlog
+*.idb
+
+# 환경별 임시 파일
+*.swp
+*.tmp
+*.bak
+*.ncb
+*.sdf
+
+# 패키지
+*.nuget/
+packages/
+
+# Windows reserved device names
+NUL
+NUL.*
