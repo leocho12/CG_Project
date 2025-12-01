@@ -12,42 +12,48 @@
 #include <vector>
 #include <random>
 #include <algorithm>
+
 #include <string>
+
+// =============================================================
+// stb_image.h (텍스처 로드)
+// =============================================================
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 
 using glm::vec3;
 using glm::mat4;
 
-// =======================================================
+// =============================================================
 // 전역 변수
-// =======================================================
+// =============================================================
 int gWidth = 1280;
 int gHeight = 720;
 
 GLuint gProgram = 0;
 GLuint gCubeVAO = 0, gCubeVBO = 0;
 
-// 카메라 (오른쪽 3D 장면)
-vec3 camPos(0.0f, 12.0f, 22.0f);
-vec3 camTarget(0.0f, 3.0f, 0.0f);
-vec3 camUp(0.0f, 1.0f, 0.0f);
+GLuint gDiceTex = 0;
+GLuint gTrayTex = 0;
+
+// 카메라
+vec3 camPos(0.0f, 25.0f, 0.0f);
+vec3 camTarget(0.0f, 4.6f, 0.0f);
+vec3 camUp(0.0f, 0.0f, -1.0f);
 
 // 랜덤
 std::mt19937 rng{ std::random_device{}() };
 std::uniform_int_distribution<int> distVal(1, 6);
 std::uniform_real_distribution<float> distF(-0.5f, 0.5f);
 
-// OBJ 로드 성공 여부 표시용
-bool gTrayLoaded = false;
-bool gDiceLoaded = false;
-
-// =======================================================
-// 셰이더 유틸
-// =======================================================
+// =============================================================
+// Shader
+// =============================================================
 std::string LoadTextFile(const char* path)
 {
     std::ifstream f(path);
     if (!f.is_open()) {
-        std::cerr << "Failed to open " << path << std::endl;
+        std::cerr << "Failed to open shader : " << path << std::endl;
         return "";
     }
     std::stringstream ss;
@@ -59,16 +65,19 @@ GLuint CompileShader(const char* path, GLenum type)
 {
     std::string src = LoadTextFile(path);
     const char* csrc = src.c_str();
+
     GLuint sh = glCreateShader(type);
     glShaderSource(sh, 1, &csrc, nullptr);
     glCompileShader(sh);
 
     GLint ok;
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetShaderInfoLog(sh, 1024, nullptr, log);
-        std::cerr << "Shader compile error (" << path << "):\n" << log << std::endl;
+
+    if (!ok)
+    {
+        char log[2048];
+        glGetShaderInfoLog(sh, 2048, nullptr, log);
+        std::cerr << "Shader compile error: " << log << std::endl;
     }
     return sh;
 }
@@ -77,27 +86,30 @@ GLuint CreateProgram()
 {
     GLuint vs = CompileShader("vertex.glsl", GL_VERTEX_SHADER);
     GLuint fs = CompileShader("fragment.glsl", GL_FRAGMENT_SHADER);
-    GLuint prog = glCreateProgram();
-    glAttachShader(prog, vs);
-    glAttachShader(prog, fs);
-    glLinkProgram(prog);
+
+    GLuint prg = glCreateProgram();
+    glAttachShader(prg, vs);
+    glAttachShader(prg, fs);
+    glLinkProgram(prg);
 
     GLint ok;
-    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
-    if (!ok) {
-        char log[1024];
-        glGetProgramInfoLog(prog, 1024, nullptr, log);
-        std::cerr << "Program link error:\n" << log << std::endl;
+    glGetProgramiv(prg, GL_LINK_STATUS, &ok);
+    if (!ok)
+    {
+        char log[2048];
+        glGetProgramInfoLog(prg, 2048, nullptr, log);
+        std::cerr << "Program link error: " << log << std::endl;
     }
+
     glDeleteShader(vs);
     glDeleteShader(fs);
-    return prog;
+    return prg;
 }
 
-// =======================================================
-// 아주 단순 OBJ 로더 (정점 위치만 사용)
-// =======================================================
-bool LoadObjPositions(const char* path, std::vector<float>& outVerts)
+// =============================================================
+// OBJ Loader
+// =============================================================
+bool LoadObj(const char* path, std::vector<float>& out)
 {
     std::ifstream f(path);
     if (!f.is_open()) {
@@ -105,235 +117,213 @@ bool LoadObjPositions(const char* path, std::vector<float>& outVerts)
         return false;
     }
 
-    std::vector<vec3> positions;
+    std::vector<glm::vec3> pos;
+    std::vector<glm::vec2> uv;
+
     std::string line;
 
-    auto addTriangle = [&](int i0, int i1, int i2) {
-        vec3 v0 = positions[i0];
-        vec3 v1 = positions[i1];
-        vec3 v2 = positions[i2];
-        outVerts.push_back(v0.x); outVerts.push_back(v0.y); outVerts.push_back(v0.z);
-        outVerts.push_back(v1.x); outVerts.push_back(v1.y); outVerts.push_back(v1.z);
-        outVerts.push_back(v2.x); outVerts.push_back(v2.y); outVerts.push_back(v2.z);
+    auto pushVert = [&](int vi, int ti) {
+        glm::vec3 p = pos[vi];
+        glm::vec2 t(0, 0);
+        if (ti >= 0 && ti < uv.size())
+            t = uv[ti];
+
+        out.push_back(p.x);
+        out.push_back(p.y);
+        out.push_back(p.z);
+        out.push_back(t.x);
+        out.push_back(t.y);
         };
 
-    while (std::getline(f, line)) {
-        if (line.empty() || line[0] == '#') continue;
+    while (std::getline(f, line))
+    {
+        if (line.size() < 2 || line[0] == '#') continue;
+
         std::istringstream iss(line);
         std::string tag;
         iss >> tag;
-        if (tag == "v") {
+
+        if (tag == "v")
+        {
             float x, y, z;
             iss >> x >> y >> z;
-            positions.emplace_back(x, y, z);
+            pos.push_back({ x,y,z });
         }
-        else if (tag == "f") {
-            std::vector<int> idx;
-            std::string token;
-            while (iss >> token) {
-                size_t slash = token.find('/');
-                std::string num = (slash == std::string::npos) ? token : token.substr(0, slash);
-                int i = std::stoi(num);
-                idx.push_back(i - 1);    // OBJ는 1-base
-            }
-            if (idx.size() >= 3) {
-                for (size_t i = 1; i + 1 < idx.size(); ++i) {
-                    addTriangle(idx[0], idx[i], idx[i + 1]);
-                }
-            }
+        else if (tag == "vt")
+        {
+            float u, v;
+            iss >> u >> v;
+            uv.push_back({ u,v });
         }
-    }
+        else if (tag == "f")
+        {
+            std::string tok;
+            std::vector<std::pair<int, int>> fverts;
 
-    if (outVerts.empty()) {
-        std::cerr << "OBJ has no geometry: " << path << std::endl;
-        return false;
+            while (iss >> tok)
+            {
+                int vi = -1, ti = -1;
+                size_t s = tok.find('/');
+                if (s == std::string::npos)
+                {
+                    vi = std::stoi(tok) - 1;
+                }
+                else
+                {
+                    vi = std::stoi(tok.substr(0, s)) - 1;
+                    std::string t = tok.substr(s + 1);
+                    if (!t.empty())
+                        ti = std::stoi(t) - 1;
+                }
+                fverts.push_back({ vi,ti });
+            }
+
+            for (int i = 1; i + 1 < fverts.size(); ++i)
+            {
+                pushVert(fverts[0].first, fverts[0].second);
+                pushVert(fverts[i].first, fverts[i].second);
+                pushVert(fverts[i + 1].first, fverts[i + 1].second);
+            }
+        }
     }
-    std::cout << "Loaded OBJ " << path << " : "
-        << outVerts.size() / 3 << " vertices\n";
-    return true;
+    return !out.empty();
 }
 
-// 모델 구조체
-struct Model {
-    GLuint vao = 0;
-    GLuint vbo = 0;
-    GLsizei vertexCount = 0;
+struct Model
+{
+    GLuint vao = 0, vbo = 0;
+    GLsizei count = 0;
 
-    bool loadFromObj(const char* path)
+    bool load(const char* path)
     {
         std::vector<float> verts;
-        if (!LoadObjPositions(path, verts)) return false;
+        if (!LoadObj(path, verts))
+            return false;
 
         glGenVertexArrays(1, &vao);
         glGenBuffers(1, &vbo);
 
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, vbo);
+
         glBufferData(GL_ARRAY_BUFFER,
             verts.size() * sizeof(float),
             verts.data(), GL_STATIC_DRAW);
 
+        // pos
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-            sizeof(float) * 3, (void*)0);
+            sizeof(float) * 5, (void*)0);
+
+        // uv
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE,
+            sizeof(float) * 5, (void*)(sizeof(float) * 3));
 
         glBindVertexArray(0);
-        vertexCount = (GLsizei)(verts.size() / 3);
+        count = verts.size() / 5;
+
         return true;
     }
 
-    void draw(const mat4& MVP, const vec3& color) const
+    void draw(const mat4& MVP, const vec3& col, GLuint texID, bool textured)
     {
-        if (vao == 0 || vertexCount == 0) return;
+        if (vao == 0 || count == 0) return;
 
         glUseProgram(gProgram);
         glBindVertexArray(vao);
 
         GLint mvpLoc = glGetUniformLocation(gProgram, "uMVP");
         GLint colLoc = glGetUniformLocation(gProgram, "uColor");
-        glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, &MVP[0][0]);
-        glUniform3fv(colLoc, 1, &color[0]);
+        GLint useTexLoc = glGetUniformLocation(gProgram, "uUseTexture");
+        GLint texLoc = glGetUniformLocation(gProgram, "uTex");
 
-        glDrawArrays(GL_TRIANGLES, 0, vertexCount);
+        glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, &MVP[0][0]);
+        glUniform3fv(colLoc, 1, &col[0]);
+        glUniform1i(useTexLoc, textured ? 1 : 0);
+
+        if (textured && texID != 0) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texID);
+            glUniform1i(texLoc, 0);
+        }
+
+        glDrawArrays(GL_TRIANGLES, 0, count);
+
         glBindVertexArray(0);
     }
+
 };
 
-Model gTrayModel;  // Yacht.obj
-Model gDiceModel;  // Dice.obj
+Model trayModel;
+Model diceModel;
 
-// =======================================================
-// 기본 큐브(단색) VBO (테이블용)
-// =======================================================
-void InitCube()
+// =============================================================
+// 텍스처 로드
+// =============================================================
+GLuint LoadTexture(const char* path)
 {
-    const float s = 0.5f;
-    float verts[] = {
-        // 앞
-        -s,-s, s,  s,-s, s,  s, s, s,
-        -s,-s, s,  s, s, s, -s, s, s,
-        // 뒤
-        -s,-s,-s, -s, s,-s,  s, s,-s,
-        -s,-s,-s,  s, s,-s,  s,-s,-s,
-        // 왼
-        -s,-s,-s, -s,-s, s, -s, s, s,
-        -s,-s,-s, -s, s, s, -s, s,-s,
-        // 오
-         s,-s,-s,  s, s,-s,  s, s, s,
-         s,-s,-s,  s, s, s,  s,-s, s,
-         // 위
-         -s, s,-s, -s, s, s,  s, s, s,
-         -s, s,-s,  s, s, s,  s, s,-s,
-         // 아래
-         -s,-s,-s,  s,-s,-s,  s,-s, s,
-         -s,-s,-s,  s,-s, s, -s,-s, s
-    };
+	stbi_set_flip_vertically_on_load(true);
 
-    glGenVertexArrays(1, &gCubeVAO);
-    glGenBuffers(1, &gCubeVBO);
+    int w, h, c;
+    unsigned char* buf = stbi_load(path, &w, &h, &c, 4);
 
-    glBindVertexArray(gCubeVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, gCubeVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    if (!buf)
+    {
+        std::cerr << "Failed to load texture: " << path << std::endl;
+        return 0;
+    }
 
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 3, (void*)0);
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
 
-    glBindVertexArray(0);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
+        w, h, 0,
+        GL_RGBA, GL_UNSIGNED_BYTE, buf);
+
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    glTexParameteri(GL_TEXTURE_2D,
+        GL_TEXTURE_MIN_FILTER,
+        GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D,
+        GL_TEXTURE_MAG_FILTER,
+        GL_LINEAR);
+
+    stbi_image_free(buf);
+    return tex;
 }
 
-void DrawCube(const mat4& MVP, const vec3& color)
-{
-    glUseProgram(gProgram);
-    glBindVertexArray(gCubeVAO);
-
-    GLint mvpLoc = glGetUniformLocation(gProgram, "uMVP");
-    GLint colorLoc = glGetUniformLocation(gProgram, "uColor");
-    glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, &MVP[0][0]);
-    glUniform3fv(colorLoc, 1, &color[0]);
-
-    glDrawArrays(GL_TRIANGLES, 0, 36);
-    glBindVertexArray(0);
-}
-
-// =======================================================
-// Yacht 게임 상태
-// =======================================================
+// =============================================================
+// Yacht Dice 구조체
+// =============================================================
 struct Die {
-    int    value;      // 1~6
-    bool   held;
-    vec3   pos;
-    vec3   rotAxis;
-    float  angle;      // 회전 애니메이션용
+    int value;
+    bool held;
+    vec3 pos;
+    vec3 rotAxis;
+    float angle;
 };
 
 Die gDice[5];
 
-int  gRollCount = 0;      // 한 턴에 굴린 횟수 (최대 3)
-int  gTurn = 1;           // 1~12
-
 bool gRolling = false;
-float gRollTimer = 0.0f;
-const float ROLL_DURATION = 0.6f;
+float gRollTimer = 0;
+const float ROLL_DUR = 0.6f;
 
-enum CategoryType {
-    CAT_ACES, CAT_DEUCES, CAT_THREES, CAT_FOURS, CAT_FIVES, CAT_SIXES,
-    CAT_CHOICE, CAT_FOURKIND, CAT_FULLHOUSE,
-    CAT_SMALLST, CAT_LARGEST, CAT_YACHT,
-    CAT_COUNT
-};
+int gTurn = 1;
+int gRollCount = 0;
 
-struct Category {
-    const char* name;
-    bool used;
-    int  score;
-};
-
-Category gCats[CAT_COUNT] = {
-    {"Aces",         false, 0},
-    {"Deuces",       false, 0},
-    {"Threes",       false, 0},
-    {"Fours",        false, 0},
-    {"Fives",        false, 0},
-    {"Sixes",        false, 0},
-    {"Choice",       false, 0},
-    {"4 of a Kind",  false, 0},
-    {"Full House",   false, 0},
-    {"S. Straight",  false, 0},
-    {"L. Straight",  false, 0},
-    {"Yacht",        false, 0}
-};
-
-int TotalScore()
-{
-    int s = 0;
-    for (int i = 0; i < CAT_COUNT; ++i) s += gCats[i].score;
-    return s;
-}
-
-// 주사위 초기 위치 세팅
-void InitDice()
-{
-    // 트레이 중앙 근처에 놓기
-    float startX = -2.5f;
-    float step = 1.8f;
-    float y = 1.0f;   // 테이블 위 약간 위
-    float z = 0.0f;
-
-    for (int i = 0; i < 5; ++i) {
-        gDice[i].value = distVal(rng);
-        gDice[i].held = false;
-        gDice[i].pos = vec3(startX + step * i, y, z);
-        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1.0f, distF(rng)));
-        gDice[i].angle = 0.0f;
-    }
-    gRollCount = 0;
-}
-
+// =============================================================
+// 주사위 점수 계산
+// =============================================================
 std::vector<int> CountDice()
 {
     std::vector<int> c(7, 0);
-    for (int i = 0; i < 5; ++i) c[gDice[i].value]++;
+    for (int i = 0; i < 5; i++)
+        c[gDice[i].value]++;
+
     return c;
 }
 
@@ -346,28 +336,29 @@ int ScoreUpper(int face)
 int ScoreChoice()
 {
     int s = 0;
-    for (int i = 0; i < 5; ++i) s += gDice[i].value;
+    for (int i = 0; i < 5; i++) s += gDice[i].value;
     return s;
 }
 
 int ScoreFourKind()
 {
     auto c = CountDice();
-    int sum = ScoreChoice();
-    for (int v = 1; v <= 6; ++v)
-        if (c[v] >= 4) return sum;
+    int tot = ScoreChoice();
+    for (int v = 1; v <= 6; v++)
+        if (c[v] >= 4) return tot;
     return 0;
 }
 
 int ScoreFullHouse()
 {
     auto c = CountDice();
-    bool three = false, two = false;
-    for (int v = 1; v <= 6; ++v) {
-        if (c[v] == 3) three = true;
-        else if (c[v] == 2) two = true;
+    bool t = false, d = false;
+    for (int v = 1; v <= 6; v++)
+    {
+        if (c[v] == 3) t = true;
+        if (c[v] == 2) d = true;
     }
-    return (three && two) ? 25 : 0;
+    return (t && d) ? 25 : 0;
 }
 
 int ScoreSmallStraight()
@@ -390,200 +381,252 @@ int ScoreLargeStraight()
 int ScoreYacht()
 {
     auto c = CountDice();
-    for (int v = 1; v <= 6; ++v)
+    for (int v = 1; v <= 6; v++)
         if (c[v] == 5) return 50;
     return 0;
 }
 
-int CalcCategoryScore(CategoryType cat)
+// =============================================================
+// 카테고리
+// =============================================================
+enum CategoryType {
+    ACES, DEUCES, THREES, FOURS, FIVES, SIXES,
+    CHOICE, FOURKIND, FULLHOUSE,
+    SSTRAIGHT, LSTRAIGHT, YACHT,
+    CATCOUNT
+};
+
+struct Category {
+    const char* name;
+    bool used;
+    int score;
+};
+
+Category gCat[CATCOUNT] = {
+    {"Aces",false,0},
+    {"Deuces",false,0},
+    {"Threes",false,0},
+    {"Fours",false,0},
+    {"Fives",false,0},
+    {"Sixes",false,0},
+    {"Choice",false,0},
+    {"4 of a Kind",false,0},
+    {"Full House",false,0},
+    {"S. Straight",false,0},
+    {"L. Straight",false,0},
+    {"Yacht",false,0},
+};
+
+int TotalScore()
 {
-    switch (cat) {
-    case CAT_ACES:   return ScoreUpper(1);
-    case CAT_DEUCES: return ScoreUpper(2);
-    case CAT_THREES: return ScoreUpper(3);
-    case CAT_FOURS:  return ScoreUpper(4);
-    case CAT_FIVES:  return ScoreUpper(5);
-    case CAT_SIXES:  return ScoreUpper(6);
-    case CAT_CHOICE: return ScoreChoice();
-    case CAT_FOURKIND: return ScoreFourKind();
-    case CAT_FULLHOUSE: return ScoreFullHouse();
-    case CAT_SMALLST: return ScoreSmallStraight();
-    case CAT_LARGEST: return ScoreLargeStraight();
-    case CAT_YACHT: return ScoreYacht();
-    default: return 0;
-    }
+    int s = 0;
+    for (int i = 0; i < CATCOUNT; i++)
+        s += gCat[i].score;
+    return s;
 }
 
-// 굴리기 시작
+// =============================================================
+// Init Dice
+// =============================================================
+void InitDice()
+{
+    float start = -3.0f;
+    float step = 1.5f;
+
+    for (int i = 0; i < 5; i++)
+    {
+        gDice[i].value = distVal(rng);
+        gDice[i].held = false;
+        gDice[i].pos = vec3(start + step * i, 3.0f, 0);
+        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1, distF(rng)));
+        gDice[i].angle = 0;
+    }
+    gRollCount = 0;
+}
+
+// =============================================================
+// 주사위 굴리기
+// =============================================================
 void StartRoll()
 {
     if (gRolling) return;
     if (gRollCount >= 3) return;
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 5; i++)
+    {
         if (gDice[i].held) continue;
         gDice[i].value = distVal(rng);
-        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1.0f, distF(rng)));
-        gDice[i].angle = 0.0f;
+        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1, distF(rng)));
+        gDice[i].angle = 0;
     }
-
     gRolling = true;
-    gRollTimer = 0.0f;
-    ++gRollCount;
+    gRollTimer = 0;
+    gRollCount++;
 }
 
-// =======================================================
-// 2D 텍스트 출력 (왼쪽 점수판용) - fixed pipeline 사용
-// =======================================================
-void DrawBitmapText(float x, float y, const char* text)
+// =============================================================
+// 텍스트 출력
+// =============================================================
+void DrawText(float x, float y, const char* s)
 {
     glRasterPos2f(x, y);
-    while (*text) {
-        glutBitmapCharacter(GLUT_BITMAP_8_BY_13, *text++);
+    while (*s)
+    {
+        glutBitmapCharacter(GLUT_BITMAP_8_BY_13, *s);
+        s++;
     }
 }
 
-// =======================================================
-// 렌더링
-// =======================================================
+// =============================================================
+// Display
+// =============================================================
 void Display()
 {
-    glClearColor(0.8f, 0.8f, 0.8f, 1.0f);
+    glClearColor(0.85f, 0.85f, 0.85f, 1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glEnable(GL_DEPTH_TEST);
 
-    // 오른쪽: 3D 테이블 + 트레이 + 주사위
-    int rightX = gWidth / 3;
-    int rightW = gWidth - rightX;
+    int leftW = gWidth / 3;
+    int rightX = leftW;
+    int rightW = gWidth - leftW;
+
+    // ---------- 3D View ----------
     glViewport(rightX, 0, rightW, gHeight);
 
     mat4 view = glm::lookAt(camPos, camTarget, camUp);
     mat4 proj = glm::perspective(glm::radians(45.0f),
-        (float)rightW / (float)gHeight,
+        (float)rightW / gHeight,
         0.1f, 100.0f);
 
-    // 테이블(넓은 평판) = 큐브를 납작하게 스케일
+    // 바닥평판
     {
-        mat4 model(1.0f);
-        model = glm::translate(model, vec3(0.0f, 0.0f, 0.0f));
-        model = glm::scale(model, vec3(12.0f, 0.5f, 10.0f));
-        DrawCube(proj * view * model, vec3(0.6f, 0.4f, 0.25f)); // 나무색
+        mat4 M(1);
+        M = glm::translate(M, vec3(0.0f, -1.4f, 0.0f));
+        M = glm::scale(M, vec3(12, 0.4f, 10));
+        glUseProgram(gProgram);
+        glUniform1i(glGetUniformLocation(gProgram, "uUseTexture"), 0);
+        // 큐브 draw (단색)
+        glBindVertexArray(gCubeVAO);
+        glUniformMatrix4fv(glGetUniformLocation(gProgram, "uMVP"),
+            1, GL_FALSE, &(proj * view * M)[0][0]);
+        glUniform3f(glGetUniformLocation(gProgram, "uColor"),
+            0.65f, 0.45f, 0.25f);
+        glDrawArrays(GL_TRIANGLES, 0, 36);
     }
 
-    // 트레이 OBJ (Yacht.obj)
+    // 트레이 OBJ + Yachtboard 텍스처
     {
         mat4 model(1.0f);
-        // 모델 크기가 -1~1 정도라서 6배 확대, 높이는 대략 테이블 위로
         model = glm::translate(model, vec3(0.0f, 4.6f, 0.0f));
         model = glm::scale(model, vec3(6.0f, 6.0f, 6.0f));
-        gTrayModel.draw(proj * view * model, vec3(0.9f, 0.9f, 0.9f));
+
+        // 색은 (1,1,1)로 두고 텍스처 색 그대로 나오게
+        trayModel.draw(proj * view * model, vec3(1.0f), gTrayTex, true);
     }
 
-    // 주사위 5개 OBJ (Dice.obj)
-    for (int i = 0; i < 5; ++i) {
-        mat4 model(1.0f);
-        model = glm::translate(model, gDice[i].pos);
-        model = glm::rotate(model,
-            glm::radians(gDice[i].angle),
-            gDice[i].rotAxis);
-        // Dice.obj 가 매우 작아서 (대략 ±0.009) 80배 확대
-        model = glm::scale(model, vec3(80.0f));
 
-        vec3 color = gDice[i].held ? vec3(0.9f, 0.9f, 0.3f) : vec3(0.95f);
-        gDiceModel.draw(proj * view * model, color);
+    // 주사위 5개 OBJ (텍스처)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            mat4 M(1);
+            M = glm::translate(M, gDice[i].pos);
+            M = glm::rotate(M, glm::radians(gDice[i].angle),
+                gDice[i].rotAxis);
+            M = glm::scale(M, vec3(80));
+
+            diceModel.draw(proj * view * M, vec3(1.0f), gDiceTex, true);
+
+        }
     }
 
-    // ---------------------------------------------------
-    // 왼쪽: 점수판 (2D, fixed pipeline)
-    // ---------------------------------------------------
+    // ---------- 2D Scoreboard ----------
     glDisable(GL_DEPTH_TEST);
     glUseProgram(0);
 
-    glViewport(0, 0, gWidth / 3, gHeight);
+    glViewport(0, 0, leftW, gHeight);
 
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
-    glOrtho(0.0, 1.0, 0.0, 1.0, -1.0, 1.0);
+    glOrtho(0, 1, 0, 1, -1, 1);
 
     glMatrixMode(GL_MODELVIEW);
     glPushMatrix();
     glLoadIdentity();
 
-    // 배경 노란 박스
-    glColor3f(0.98f, 0.96f, 0.6f);
+    // 배경
+    glColor3f(0.98f, 0.96f, 0.60f);
     glBegin(GL_QUADS);
-    glVertex2f(0.02f, 0.02f);
-    glVertex2f(0.98f, 0.02f);
-    glVertex2f(0.98f, 0.98f);
-    glVertex2f(0.02f, 0.98f);
+    glVertex2f(0, 0);
+    glVertex2f(1, 0);
+    glVertex2f(1, 1);
+    glVertex2f(0, 1);
     glEnd();
 
-    // 글자 색
-    glColor3f(0.0f, 0.0f, 0.0f);
+    glColor3f(0, 0, 0);
 
     char buf[128];
-    float y = 0.94f;
-    DrawBitmapText(0.05f, y, "YACHT SCORE BOARD");
-    y -= 0.06f;
+    float Y = 0.95f;
 
-    sprintf(buf, "Turn %d / 12   Roll %d / 3", gTurn, gRollCount);
-    DrawBitmapText(0.05f, y, buf);
-    y -= 0.06f;
+    DrawText(0.05f, Y, "YACHT SCORE BOARD");
+    Y -= 0.06f;
 
-    DrawBitmapText(0.05f, y, "SPACE: Roll   1-5: Hold/Release");
-    y -= 0.06f;
-    DrawBitmapText(0.05f, y, "A-F: Aces~Sixes   G:Choice  H:4Kind  J:Full  K:S.S  L:L.S  Y:Yacht");
-    y -= 0.08f;
+    sprintf(buf, "Turn %d / 12    Roll %d / 3", gTurn, gRollCount);
+    DrawText(0.05f, Y, buf); Y -= 0.06f;
 
-    for (int i = 0; i < CAT_COUNT; ++i) {
-        sprintf(buf, "%2d. %-13s : %3d %s",
-            i + 1, gCats[i].name, gCats[i].score,
-            gCats[i].used ? "*" : "");
-        DrawBitmapText(0.05f, y, buf);
-        y -= 0.05f;
+    DrawText(0.05f, Y, "SPACE: Roll   1-5 : Hold");
+    Y -= 0.05f;
+
+    DrawText(0.05f, Y, "A-F: Aces~Sixes,  G:Choice  H:4Kind  J:Full");
+    Y -= 0.05f;
+    DrawText(0.05f, Y, "K:S.S   L:L.S   Y:Yacht");
+    Y -= 0.08f;
+
+    for (int i = 0; i < CATCOUNT; i++)
+    {
+        sprintf(buf, "%2d. %-12s : %3d %s",
+            i + 1, gCat[i].name, gCat[i].score,
+            gCat[i].used ? "*" : "");
+        DrawText(0.05f, Y, buf);
+        Y -= 0.045f;
     }
 
-    // OBJ 로딩 상태 표시
-    sprintf(buf, "Tray:%s  Dice:%s",
-        gTrayLoaded ? "OK" : "NG",
-        gDiceLoaded ? "OK" : "NG");
-    DrawBitmapText(0.05f, 0.10f, buf);
-
-    sprintf(buf, "TOTAL : %3d", TotalScore());
-    DrawBitmapText(0.05f, 0.05f, buf);
+    sprintf(buf, "TOTAL : %d", TotalScore());
+    DrawText(0.05f, 0.04f, buf);
 
     glPopMatrix();
     glMatrixMode(GL_PROJECTION);
     glPopMatrix();
-    glMatrixMode(GL_MODELVIEW);
 
     glutSwapBuffers();
 }
 
-// =======================================================
-// 업데이트 (주사위 굴리는 애니메이션)
-// =======================================================
+// =============================================================
+// Timer
+// =============================================================
 void Timer(int)
 {
-    float dt = 0.03f; // 30ms
+    float dt = 0.03f;
 
-    if (gRolling) {
+    if (gRolling)
+    {
         gRollTimer += dt;
-        float t = gRollTimer / ROLL_DURATION;
-        if (t > 1.0f) t = 1.0f;
+        float t = gRollTimer / ROLL_DUR;
+        if (t > 1) t = 1;
 
-        for (int i = 0; i < 5; ++i) {
-            if (gDice[i].held) continue;
-            gDice[i].angle = 360.0f * t * 2.0f; // 대충 회전
+        for (int i = 0; i < 5; i++)
+        {
+            if (!gDice[i].held)
+                gDice[i].angle = 360.0f * t * 2;
         }
 
-        if (gRollTimer >= ROLL_DURATION) {
+        if (gRollTimer >= ROLL_DUR)
+        {
             gRolling = false;
-            for (int i = 0; i < 5; ++i) {
-                gDice[i].angle = 0.0f;
-            }
+            for (int i = 0; i < 5; i++)
+                gDice[i].angle = 0;
         }
     }
 
@@ -591,53 +634,109 @@ void Timer(int)
     glutTimerFunc(30, Timer, 0);
 }
 
-// =======================================================
-// 입력
-// =======================================================
-void FinishCategory(CategoryType cat)
-{
-    if (gCats[cat].used) return;
-    gCats[cat].score = CalcCategoryScore(cat);
-    gCats[cat].used = true;
-    InitDice();
-    ++gTurn;
-}
-
+// =============================================================
+// Keyboard
+// =============================================================
 void Keyboard(unsigned char key, int, int)
 {
-    if (key >= '1' && key <= '5') {
+    if (key >= '1' && key <= '5')
+    {
         int idx = key - '1';
         gDice[idx].held = !gDice[idx].held;
         return;
     }
 
-    switch (key) {
+    switch (key)
+    {
     case ' ':
         StartRoll();
         break;
 
-        // A~F : Aces~Sixes
-    case 'a': case 'A': FinishCategory(CAT_ACES);   break;
-    case 'b': case 'B': FinishCategory(CAT_DEUCES); break;
-    case 'c': case 'C': FinishCategory(CAT_THREES); break;
-    case 'd': case 'D': FinishCategory(CAT_FOURS);  break;
-    case 'e': case 'E': FinishCategory(CAT_FIVES);  break;
-    case 'f': case 'F': FinishCategory(CAT_SIXES);  break;
+    case 'a': case 'A':
+        if (!gCat[ACES].used) {
+            gCat[ACES].used = true;
+            gCat[ACES].score = ScoreUpper(1);
+            InitDice(); gTurn++;
+        } break;
 
-        // G: Choice
-    case 'g': case 'G': FinishCategory(CAT_CHOICE);    break;
-        // H: 4Kind
-    case 'h': case 'H': FinishCategory(CAT_FOURKIND);  break;
-        // J: Full House
-    case 'j': case 'J': FinishCategory(CAT_FULLHOUSE); break;
-        // K: Small Straight
-    case 'k': case 'K': FinishCategory(CAT_SMALLST);   break;
-        // L: Large Straight
-    case 'l': case 'L': FinishCategory(CAT_LARGEST);   break;
-        // Y: Yacht
-    case 'y': case 'Y': FinishCategory(CAT_YACHT);     break;
+    case 'b': case 'B':
+        if (!gCat[DEUCES].used) {
+            gCat[DEUCES].used = true;
+            gCat[DEUCES].score = ScoreUpper(2);
+            InitDice(); gTurn++;
+        } break;
 
-    case 27: // ESC
+    case 'c': case 'C':
+        if (!gCat[THREES].used) {
+            gCat[THREES].used = true;
+            gCat[THREES].score = ScoreUpper(3);
+            InitDice(); gTurn++;
+        } break;
+
+    case 'd': case 'D':
+        if (!gCat[FOURS].used) {
+            gCat[FOURS].used = true;
+            gCat[FOURS].score = ScoreUpper(4);
+            InitDice(); gTurn++;
+        } break;
+
+    case 'e': case 'E':
+        if (!gCat[FIVES].used) {
+            gCat[FIVES].used = true;
+            gCat[FIVES].score = ScoreUpper(5);
+            InitDice(); gTurn++;
+        } break;
+
+    case 'f': case 'F':
+        if (!gCat[SIXES].used) {
+            gCat[SIXES].used = true;
+            gCat[SIXES].score = ScoreUpper(6);
+            InitDice(); gTurn++;
+        } break;
+
+    case 'g': case 'G':
+        if (!gCat[CHOICE].used) {
+            gCat[CHOICE].used = true;
+            gCat[CHOICE].score = ScoreChoice();
+            InitDice(); gTurn++;
+        } break;
+
+    case 'h': case 'H':
+        if (!gCat[FOURKIND].used) {
+            gCat[FOURKIND].used = true;
+            gCat[FOURKIND].score = ScoreFourKind();
+            InitDice(); gTurn++;
+        } break;
+
+    case 'j': case 'J':
+        if (!gCat[FULLHOUSE].used) {
+            gCat[FULLHOUSE].used = true;
+            gCat[FULLHOUSE].score = ScoreFullHouse();
+            InitDice(); gTurn++;
+        } break;
+
+    case 'k': case 'K':
+        if (!gCat[SSTRAIGHT].used) {
+            gCat[SSTRAIGHT].used = true;
+            gCat[SSTRAIGHT].score = ScoreSmallStraight();
+            InitDice(); gTurn++;
+        } break;
+
+    case 'l': case 'L':
+        if (!gCat[LSTRAIGHT].used) {
+            gCat[LSTRAIGHT].used = true;
+            gCat[LSTRAIGHT].score = ScoreLargeStraight();
+            InitDice(); gTurn++;
+        } break;
+
+    case 'y': case 'Y':
+        if (!gCat[YACHT].used) {
+            gCat[YACHT].used = true;
+            gCat[YACHT].score = ScoreYacht();
+            InitDice(); gTurn++;
+        } break;
+
+    case 27:
         exit(0);
         break;
     }
@@ -645,45 +744,80 @@ void Keyboard(unsigned char key, int, int)
     glutPostRedisplay();
 }
 
-// =======================================================
-// 초기화
-// =======================================================
+// =============================================================
+// InitGL
+// =============================================================
 void InitGL()
 {
     glewInit();
     glEnable(GL_DEPTH_TEST);
 
     gProgram = CreateProgram();
-    InitCube();
-    InitDice();
+
+    // 단색 큐브
+    float s = 0.5f;
+    float cube[] = {
+        // Front
+        -s,-s,s,  s,-s,s,  s,s,s,
+        -s,-s,s,  s,s,s,  -s,s,s,
+        // Back
+        -s,-s,-s, -s,s,-s, s,s,-s,
+        -s,-s,-s, s,s,-s, s,-s,-s,
+        // Left
+        -s,-s,-s, -s,-s,s, -s,s,s,
+        -s,-s,-s, -s,s,s, -s,s,-s,
+        // Right
+         s,-s,-s, s,s,-s, s,s,s,
+         s,-s,-s, s,s,s,  s,-s,s,
+         // Top
+         -s,s,-s, -s,s,s, s,s,s,
+         -s,s,-s, s,s,s,  s,s,-s,
+         // Bottom
+         -s,-s,-s,  s,-s,-s, s,-s,s,
+         -s,-s,-s, s,-s,s, -s,-s,s
+    };
+
+    glGenVertexArrays(1, &gCubeVAO);
+    glGenBuffers(1, &gCubeVBO);
+
+    glBindVertexArray(gCubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, gCubeVBO);
+
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cube),
+        cube, GL_STATIC_DRAW);
+
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
+        sizeof(float) * 3, (void*)0);
+
+    glBindVertexArray(0);
 
     // OBJ 로드
-    gTrayLoaded = gTrayModel.loadFromObj("Yacht.obj");
-    gDiceLoaded = gDiceModel.loadFromObj("Dice.obj");
-    if (!gTrayLoaded) std::cout << "Failed to load Yacht.obj\n";
-    if (!gDiceLoaded) std::cout << "Failed to load Dice.obj\n";
+    trayModel.load("Yacht.obj");
+    diceModel.load("Dice.obj");
+
+    // 텍스처 로드
+    gDiceTex = LoadTexture("Dice.png");
+    gTrayTex = LoadTexture("Yachtboard.png"); 
+
+
+    InitDice();
 }
 
-void Reshape(int w, int h)
-{
-    gWidth = w;
-    gHeight = h;
-}
-
-// =======================================================
+// =============================================================
 // main
-// =======================================================
+// =============================================================
 int main(int argc, char** argv)
 {
     glutInit(&argc, argv);
     glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH);
     glutInitWindowSize(gWidth, gHeight);
-    glutCreateWindow("Yacht Dice Game");
+    glutCreateWindow("Yacht Dice Game (OBJ+Texture)");
 
     InitGL();
 
     glutDisplayFunc(Display);
-    glutReshapeFunc(Reshape);
+    glutReshapeFunc([](int w, int h) {gWidth = w; gHeight = h; });
     glutKeyboardFunc(Keyboard);
     glutTimerFunc(30, Timer, 0);
 
