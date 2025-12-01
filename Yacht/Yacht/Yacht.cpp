@@ -12,7 +12,6 @@
 #include <vector>
 #include <random>
 #include <algorithm>
-
 #include <string>
 
 // =============================================================
@@ -36,15 +35,15 @@ GLuint gCubeVAO = 0, gCubeVBO = 0;
 GLuint gDiceTex = 0;
 GLuint gTrayTex = 0;
 
-// 카메라
-vec3 camPos(0.0f, 25.0f, 0.0f);
-vec3 camTarget(0.0f, 4.6f, 0.0f);
-vec3 camUp(0.0f, 0.0f, -1.0f);
+// 카메라 (위에서 수직 내려다보는 설정)
+vec3 camPos = vec3(0.0f, 25.0f, 0.0f);
+vec3 camTarget = vec3(0.0f, 4.6f, 0.0f);
+vec3 camUp = vec3(0.0f, 0.0f, -1.0f);
 
 // 랜덤
 std::mt19937 rng{ std::random_device{}() };
-std::uniform_int_distribution<int> distVal(1, 6);
-std::uniform_real_distribution<float> distF(-0.5f, 0.5f);
+std::uniform_int_distribution<int>   distVal(1, 6);
+std::uniform_real_distribution<float>distF(-0.5f, 0.5f);
 
 // =============================================================
 // Shader
@@ -125,7 +124,7 @@ bool LoadObj(const char* path, std::vector<float>& out)
     auto pushVert = [&](int vi, int ti) {
         glm::vec3 p = pos[vi];
         glm::vec2 t(0, 0);
-        if (ti >= 0 && ti < uv.size())
+        if (ti >= 0 && ti < (int)uv.size())
             t = uv[ti];
 
         out.push_back(p.x);
@@ -178,7 +177,7 @@ bool LoadObj(const char* path, std::vector<float>& out)
                 fverts.push_back({ vi,ti });
             }
 
-            for (int i = 1; i + 1 < fverts.size(); ++i)
+            for (int i = 1; i + 1 < (int)fverts.size(); ++i)
             {
                 pushVert(fverts[0].first, fverts[0].second);
                 pushVert(fverts[i].first, fverts[i].second);
@@ -221,7 +220,7 @@ struct Model
             sizeof(float) * 5, (void*)(sizeof(float) * 3));
 
         glBindVertexArray(0);
-        count = verts.size() / 5;
+        count = (GLsizei)(verts.size() / 5);
 
         return true;
     }
@@ -263,7 +262,8 @@ Model diceModel;
 // =============================================================
 GLuint LoadTexture(const char* path)
 {
-	stbi_set_flip_vertically_on_load(true);
+    // PNG가 위에서 아래 방향으로 저장된 경우 뒤집어서 로드
+    stbi_set_flip_vertically_on_load(true);
 
     int w, h, c;
     unsigned char* buf = stbi_load(path, &w, &h, &c, 4);
@@ -299,21 +299,75 @@ GLuint LoadTexture(const char* path)
 // Yacht Dice 구조체
 // =============================================================
 struct Die {
-    int value;
-    bool held;
-    vec3 pos;
-    vec3 rotAxis;
+    int   value;
+    bool  held;
+    vec3  pos;
+    vec3  rotAxis;
     float angle;
 };
 
 Die gDice[5];
 
-bool gRolling = false;
+bool  gRolling = false;
 float gRollTimer = 0;
 const float ROLL_DUR = 0.6f;
 
 int gTurn = 1;
 int gRollCount = 0;
+
+// =============================================================
+// 주사위 값에 따른 "기본 자세" 회전
+//  - Dice.obj가 "1이 위, 2가 앞" 같은 기준이 있을 텐데
+//    그 기준에 맞춰 각도를 한 번만 조정하면 됨
+// =============================================================
+mat4 GetValueRotation(int value)
+{
+    
+    using namespace glm;
+
+    mat4 R(1.0f);
+
+    switch (value)
+    {
+    case 1:
+        R = rotate(mat4(1.0f),
+            radians(-90.0f),
+            vec3(1, 0, 0));  // x -90
+        break;
+
+    case 2:
+        R = rotate(mat4(1.0f),
+            radians(180.0f),
+            vec3(0, 0, 1));  // Z -90
+        break;
+
+    case 3:
+        R = rotate(mat4(1.0f),
+            radians(90.0f),
+            vec3(0, 0, 1));  // Z -90
+        break;
+
+    case 4:
+        R = rotate(mat4(1.0f),
+            radians(-90.0f),
+            vec3(0, 0, 1));  // Z -90
+        break;
+
+    case 5:
+        R = rotate(mat4(1.0f),
+            radians(0.0f),
+            vec3(0, 0, 1));  // Z -90
+        break;
+
+    case 6:
+        R = rotate(mat4(1.0f),
+            radians(90.0f),
+            vec3(1, 0, 0));  // Z -90
+        break;
+
+    }
+    return R;
+}
 
 // =============================================================
 // 주사위 점수 계산
@@ -428,6 +482,7 @@ int TotalScore()
 // =============================================================
 // Init Dice
 // =============================================================
+
 void InitDice()
 {
     float start = -3.0f;
@@ -437,12 +492,13 @@ void InitDice()
     {
         gDice[i].value = distVal(rng);
         gDice[i].held = false;
-        gDice[i].pos = vec3(start + step * i, 3.0f, 0);
-        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1, distF(rng)));
-        gDice[i].angle = 0;
+        gDice[i].pos = vec3(start + step * i, 3.0f, 0.0f);
+        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1.0f, distF(rng)));
+        gDice[i].angle = 0.0f;
     }
     gRollCount = 0;
 }
+
 
 // =============================================================
 // 주사위 굴리기
@@ -456,11 +512,11 @@ void StartRoll()
     {
         if (gDice[i].held) continue;
         gDice[i].value = distVal(rng);
-        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1, distF(rng)));
-        gDice[i].angle = 0;
+        gDice[i].rotAxis = glm::normalize(vec3(distF(rng), 1.0f, distF(rng)));
+        gDice[i].angle = 0.0f;
     }
     gRolling = true;
-    gRollTimer = 0;
+    gRollTimer = 0.0f;
     gRollCount++;
 }
 
@@ -476,6 +532,20 @@ void DrawText(float x, float y, const char* s)
         s++;
     }
 }
+
+// =============================================================
+// 텍스트 출력 (0~gWidth, 0~gHeight 픽셀 좌표용)
+// =============================================================
+void DrawTextPixel(float x, float y, const char* s)
+{
+    glRasterPos2f(x, y);
+    while (*s)
+    {
+        glutBitmapCharacter(GLUT_BITMAP_8_BY_13, *s);
+        ++s;
+    }
+}
+
 
 // =============================================================
 // Display
@@ -501,12 +571,12 @@ void Display()
 
     // 바닥평판
     {
-        mat4 M(1);
+        mat4 M(1.0f);
         M = glm::translate(M, vec3(0.0f, -1.4f, 0.0f));
-        M = glm::scale(M, vec3(12, 0.4f, 10));
+        M = glm::scale(M, vec3(12.0f, 0.4f, 10.0f));
         glUseProgram(gProgram);
         glUniform1i(glGetUniformLocation(gProgram, "uUseTexture"), 0);
-        // 큐브 draw (단색)
+
         glBindVertexArray(gCubeVAO);
         glUniformMatrix4fv(glGetUniformLocation(gProgram, "uMVP"),
             1, GL_FALSE, &(proj * view * M)[0][0]);
@@ -521,24 +591,79 @@ void Display()
         model = glm::translate(model, vec3(0.0f, 4.6f, 0.0f));
         model = glm::scale(model, vec3(6.0f, 6.0f, 6.0f));
 
-        // 색은 (1,1,1)로 두고 텍스처 색 그대로 나오게
         trayModel.draw(proj * view * model, vec3(1.0f), gTrayTex, true);
     }
-
 
     // 주사위 5개 OBJ (텍스처)
     {
         for (int i = 0; i < 5; i++)
         {
-            mat4 M(1);
+            mat4 M(1.0f);
+
+            // 위치
             M = glm::translate(M, gDice[i].pos);
-            M = glm::rotate(M, glm::radians(gDice[i].angle),
-                gDice[i].rotAxis);
-            M = glm::scale(M, vec3(80));
+
+            // 값에 따른 기본 회전 (윗면 맞추기)
+            M *= GetValueRotation(gDice[i].value);
+
+            // 굴리는 중이면 추가 회전
+            if (gRolling && !gDice[i].held)
+            {
+                M = glm::rotate(M,
+                    glm::radians(gDice[i].angle),
+                    gDice[i].rotAxis);
+            }
+
+            // 크기
+            M = glm::scale(M, vec3(0.5f));
 
             diceModel.draw(proj * view * M, vec3(1.0f), gDiceTex, true);
-
         }
+    }
+
+    // ---------------------------------------------------------
+    // 주사위 값 디버그용: 각 주사위 위에 숫자 출력
+    // ---------------------------------------------------------
+    {
+        glUseProgram(0);
+        glDisable(GL_DEPTH_TEST);
+
+        // 전체 윈도우 기준 픽셀 좌표로 오버레이
+        glViewport(0, 0, gWidth, gHeight);
+
+        glMatrixMode(GL_PROJECTION);
+        glPushMatrix();
+        glLoadIdentity();
+        glOrtho(0.0, (double)gWidth, 0.0, (double)gHeight, -1.0, 1.0);
+
+        glMatrixMode(GL_MODELVIEW);
+        glPushMatrix();
+        glLoadIdentity();
+
+        glColor3f(0.0f, 0.0f, 0.0f);
+
+        // 3D → 2D 변환용 뷰포트(오른쪽 3D 영역)
+        glm::vec4 vp((float)rightX, 0.0f, (float)rightW, (float)gHeight);
+
+        for (int i = 0; i < 5; ++i)
+        {
+            // 주사위 위 약간 위쪽 위치
+            glm::vec3 worldPos = gDice[i].pos + glm::vec3(0.0f, 0.7f, 0.0f);
+
+            // 3D 좌표를 화면 픽셀 좌표로 변환
+            glm::vec3 winPos = glm::project(worldPos, view, proj, vp);
+
+            char buf[8];
+            sprintf(buf, "%d", gDice[i].value);
+
+            // 숫자 살짝 위로 올리고 출력
+            DrawTextPixel(winPos.x, winPos.y + 10.0f, buf);
+        }
+
+        glPopMatrix();              // MODELVIEW
+        glMatrixMode(GL_PROJECTION);
+        glPopMatrix();
+        glMatrixMode(GL_MODELVIEW);
     }
 
     // ---------- 2D Scoreboard ----------
@@ -754,7 +879,7 @@ void InitGL()
 
     gProgram = CreateProgram();
 
-    // 단색 큐브
+    // 단색 큐브 (바닥용)
     float s = 0.5f;
     float cube[] = {
         // Front
@@ -798,8 +923,7 @@ void InitGL()
 
     // 텍스처 로드
     gDiceTex = LoadTexture("Dice.png");
-    gTrayTex = LoadTexture("Yachtboard.png"); 
-
+    gTrayTex = LoadTexture("Yachtboard.png");
 
     InitDice();
 }
@@ -817,7 +941,7 @@ int main(int argc, char** argv)
     InitGL();
 
     glutDisplayFunc(Display);
-    glutReshapeFunc([](int w, int h) {gWidth = w; gHeight = h; });
+    glutReshapeFunc([](int w, int h) { gWidth = w; gHeight = h; });
     glutKeyboardFunc(Keyboard);
     glutTimerFunc(30, Timer, 0);
 
